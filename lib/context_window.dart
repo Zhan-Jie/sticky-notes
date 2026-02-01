@@ -38,7 +38,7 @@ class ContextWindowLauncher {
         arguments: payload.encode(),
       ),
     );
-    await _safeInvoke(controller, 'context_focus');
+    await _invokeWithRetry(controller, 'context_focus');
   }
 
   static Future<bool> _safeInvoke(
@@ -51,6 +51,21 @@ class ContextWindowLauncher {
       return true;
     } catch (_) {
       return false;
+    }
+  }
+
+  static Future<void> _invokeWithRetry(
+    WindowController controller,
+    String method, [
+    dynamic arguments,
+  ]) async {
+    const attempts = 6;
+    const delay = Duration(milliseconds: 120);
+    for (var i = 0; i < attempts; i += 1) {
+      if (await _safeInvoke(controller, method, arguments)) {
+        return;
+      }
+      await Future.delayed(delay);
     }
   }
 }
@@ -84,9 +99,7 @@ class _ContextWindowAppState extends State<ContextWindowApp> with WindowListener
     _windowController = await WindowController.fromCurrentEngine();
     await _windowController.setWindowMethodHandler(_handleMethodCall);
     await _configureWindow();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _focusAndShow();
-    });
+    await _focusAndShow();
   }
 
   Future<void> _configureWindow() async {
