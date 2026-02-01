@@ -1,0 +1,9 @@
+Package: sticky-notes
+Version: 1.0.0
+Section: utils
+Priority: optional
+Architecture: amd64
+Maintainer: zhanjie
+Depends: libgtk-3-0, libnotify4, libstdc++6, libgcc-s1
+Description: Sticky notes for desktop focus
+ Lightweight always-on-top sticky notes app.

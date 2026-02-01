@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Sticky Notes
+Comment=Always-on-top sticky notes
+Exec=/opt/sticky-notes/sticky_notes
+Icon=sticky-notes
+Terminal=false
+Categories=Utility;
