@@ -85,6 +85,7 @@ class _ContextWindowAppState extends State<ContextWindowApp> with WindowListener
   String _taskTitle = '';
   bool _closing = false;
   bool _sent = false;
+  bool _isPinned = false;
 
   @override
   void initState() {
@@ -109,7 +110,7 @@ class _ContextWindowAppState extends State<ContextWindowApp> with WindowListener
       minimumSize: const Size(480, 320),
       backgroundColor: Colors.black,
       titleBarStyle: TitleBarStyle.hidden,
-      alwaysOnTop: true,
+      alwaysOnTop: _isPinned,
       skipTaskbar: true,
       windowButtonVisibility: false,
     );
@@ -176,6 +177,9 @@ class _ContextWindowAppState extends State<ContextWindowApp> with WindowListener
 
   @override
   void onWindowBlur() {
+    if (_isPinned) {
+      return;
+    }
     _sendAndHide();
   }
 
@@ -241,6 +245,19 @@ class _ContextWindowAppState extends State<ContextWindowApp> with WindowListener
                         ),
                       ),
                       IconButton(
+                        tooltip: _isPinned ? '取消置顶' : '置顶',
+                        icon: Icon(
+                          _isPinned ? Icons.push_pin : Icons.push_pin_outlined,
+                        ),
+                        onPressed: () async {
+                          final value = !_isPinned;
+                          setState(() {
+                            _isPinned = value;
+                          });
+                          await windowManager.setAlwaysOnTop(value);
+                        },
+                      ),
+                      IconButton(
                         tooltip: '关闭',
                         icon: const Icon(Icons.close),
                         onPressed: _sendAndHide,
@@ -257,11 +274,20 @@ class _ContextWindowAppState extends State<ContextWindowApp> with WindowListener
                       textAlignVertical: TextAlignVertical.top,
                       style: const TextStyle(color: Colors.white, fontSize: 16),
                       decoration: const InputDecoration(
-                        border: OutlineInputBorder(),
+                        border: InputBorder.none,
+                        enabledBorder: OutlineInputBorder(
+                          borderSide: BorderSide.none,
+                          borderRadius: BorderRadius.all(Radius.circular(12)),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderSide: BorderSide.none,
+                          borderRadius: BorderRadius.all(Radius.circular(12)),
+                        ),
                         hintText: '记录已验证结论/下一步/关键点…',
                         hintStyle: TextStyle(color: Colors.white54),
                         filled: true,
                         fillColor: Color(0xFF1C1C1C),
+                        contentPadding: EdgeInsets.all(16),
                       ),
                     ),
                   ),

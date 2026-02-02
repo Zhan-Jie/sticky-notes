@@ -268,10 +268,8 @@ class _StickyNotesHomeState extends State<StickyNotesHome> {
     final lines = text.split(RegExp(r'\r?\n'));
     final result = widget.appState.addTasks(lines);
     _inputController.clear();
-    if (result.truncated > 0) {
-      _showMessage('已达到 5 条上限，部分内容未新增');
-    } else if (result.added == 0) {
-      _showMessage('已达到 5 条上限');
+    if (result.suspended > 0) {
+      _showMessage('已新增 ${result.added} 条，其中 ${result.suspended} 条已挂起');
     }
   }
 
@@ -397,7 +395,7 @@ class _StickyNotesHomeState extends State<StickyNotesHome> {
                         },
                       ),
                       IconButton(
-                        tooltip: settings.showOnlyTodo ? '显示已完成' : '仅显示未完成',
+                        tooltip: settings.showOnlyTodo ? '显示全部' : '仅显示进行中',
                         icon: Icon(
                           settings.showOnlyTodo
                               ? Icons.visibility_off_outlined
@@ -482,13 +480,22 @@ class _StickyNotesHomeState extends State<StickyNotesHome> {
                                   }
                                 },
                             decoration: InputDecoration(
-                              hintText: '输入任务，回车新增（最多 5 条）',
+                              hintText: '输入任务，回车新增（活动最多 5 条，超出自动挂起）',
                               hintStyle: const TextStyle(color: Colors.white54),
                               filled: true,
                               fillColor: const Color(0xFF1C1C1C),
-                              border: OutlineInputBorder(
+                              border: InputBorder.none,
+                              enabledBorder: OutlineInputBorder(
                                 borderRadius: BorderRadius.circular(12),
                                 borderSide: BorderSide.none,
+                              ),
+                              focusedBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(12),
+                                borderSide: BorderSide.none,
+                              ),
+                              contentPadding: const EdgeInsets.symmetric(
+                                horizontal: 14,
+                                vertical: 12,
                               ),
                             ),
                           ),
@@ -528,12 +535,14 @@ class _StickyNotesHomeState extends State<StickyNotesHome> {
   }
 
   double _calculateListHeight(int taskCount) {
-    const taskHeight = 84.0;
+    const taskHeight = 96.0;
     const emptyHeight = 88.0;
     if (taskCount == 0) {
       return emptyHeight;
     }
-    final visibleCount = taskCount > 5 ? 5 : taskCount;
+    final visibleCount = taskCount > AppState.maxActiveTasks
+        ? AppState.maxActiveTasks
+        : taskCount;
     return visibleCount * taskHeight;
   }
 

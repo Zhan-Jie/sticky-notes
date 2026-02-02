@@ -1,6 +1,6 @@
 import 'dart:convert';
 
-enum TaskStatus { todo, done }
+enum TaskStatus { todo, suspended, done }
 
 enum FocusState { idle, running, paused, overtime }
 
@@ -36,6 +36,10 @@ class Task {
   int? lastTickAtMs;
 
   bool get isDone => status == TaskStatus.done;
+
+  bool get isSuspended => status == TaskStatus.suspended;
+
+  bool get isActive => status == TaskStatus.todo;
 
   bool get isOvertimePhase =>
       focusRemainingSec == 0 &&

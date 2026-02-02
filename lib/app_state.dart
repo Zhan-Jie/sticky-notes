@@ -2,16 +2,14 @@ import 'dart:async';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
-import 'package:local_notifier/local_notifier.dart';
-
 import 'models.dart';
 import 'storage.dart';
 
 class AddResult {
-  AddResult({required this.added, required this.truncated});
+  AddResult({required this.added, required this.suspended});
 
   final int added;
-  final int truncated;
+  final int suspended;
 }
 
 class RemovedTask {
@@ -25,6 +23,7 @@ class AppState extends ChangeNotifier {
   AppState(this.storage);
 
   final StorageService storage;
+  static const int maxActiveTasks = 5;
 
   List<Task> tasks = [];
   Settings settings = Settings.defaults();
@@ -43,6 +42,7 @@ class AppState extends ChangeNotifier {
     _ensureOrder();
     _normalizeTasks();
     _resumeRunningTasks();
+    _ensureActiveLimit();
     initialized = true;
     _startTicker();
     notifyListeners();
@@ -82,25 +82,6 @@ class AppState extends ChangeNotifier {
       ),
     );
     if (runningTask.id.isEmpty) {
-      final overtimeTask = tasks.firstWhere(
-        (task) => task.focusState == FocusState.overtime,
-        orElse: () => Task(
-          id: '',
-          text: '',
-          status: TaskStatus.todo,
-          createdAt: DateTime.now(),
-          order: 0,
-          focusDurationSec: 0,
-          focusRemainingSec: 0,
-          focusState: FocusState.idle,
-          overtimeSec: 0,
-        ),
-      );
-      if (overtimeTask.id.isEmpty) {
-        return;
-      }
-      _applyDelta(overtimeTask);
-      notifyListeners();
       return;
     }
     final transitioned = _applyDelta(runningTask);
@@ -122,17 +103,11 @@ class AppState extends ChangeNotifier {
       final remaining = task.focusRemainingSec - deltaSec;
       if (remaining <= 0) {
         task.focusRemainingSec = 0;
-        task.focusState = FocusState.overtime;
-        task.overtimeSec += -remaining;
-        _moveTaskToBottom(task);
-        if (settings.enableSystemNotification) {
-          _notifyOvertime(task);
-        }
+        task.focusState = FocusState.idle;
+        task.lastTickAtMs = null;
         return true;
       }
       task.focusRemainingSec = remaining;
-    } else if (task.focusState == FocusState.overtime) {
-      task.overtimeSec += deltaSec;
     }
     return false;
   }
@@ -140,37 +115,23 @@ class AppState extends ChangeNotifier {
   void _resumeRunningTasks() {
     final now = DateTime.now().millisecondsSinceEpoch;
     for (final task in tasks) {
-      if (task.focusState == FocusState.running ||
-          task.focusState == FocusState.overtime) {
+      if (task.focusState == FocusState.running) {
         final last = task.lastTickAtMs ?? now;
         final deltaSec = max(0, ((now - last) / 1000).floor());
         task.lastTickAtMs = now;
         if (deltaSec == 0) {
           continue;
         }
-        if (task.focusState == FocusState.running) {
-          final remaining = task.focusRemainingSec - deltaSec;
-          if (remaining <= 0) {
-            task.focusRemainingSec = 0;
-            task.focusState = FocusState.overtime;
-            task.overtimeSec += -remaining;
-            _moveTaskToBottom(task);
-          } else {
-            task.focusRemainingSec = remaining;
-          }
+        final remaining = task.focusRemainingSec - deltaSec;
+        if (remaining <= 0) {
+          task.focusRemainingSec = 0;
+          task.focusState = FocusState.idle;
+          task.lastTickAtMs = null;
         } else {
-          task.overtimeSec += deltaSec;
+          task.focusRemainingSec = remaining;
         }
       }
     }
-  }
-
-  void _notifyOvertime(Task task) {
-    final notification = LocalNotification(
-      title: '专注到点了',
-      body: '「${task.text}」进入超时计时',
-    );
-    notification.show();
   }
 
   void _ensureOrder() {
@@ -185,9 +146,83 @@ class AppState extends ChangeNotifier {
       if (task.focusDurationSec <= 0) {
         task.focusDurationSec = settings.defaultFocusMinutes * 60;
       }
-      if (task.focusRemainingSec <= 0 && task.focusState == FocusState.idle) {
-        task.focusRemainingSec = task.focusDurationSec;
+      if (task.focusRemainingSec < 0) {
+        task.focusRemainingSec = 0;
       }
+      if (task.focusState == FocusState.overtime) {
+        task.focusState = FocusState.idle;
+        task.focusRemainingSec = 0;
+        task.overtimeSec = 0;
+        task.lastTickAtMs = null;
+      }
+      if (task.isSuspended && task.focusState != FocusState.idle) {
+        task.focusState = FocusState.idle;
+        task.lastTickAtMs = null;
+      }
+    }
+  }
+
+  void _ensureActiveLimit() {
+    for (final task in tasks) {
+      if (!task.isDone &&
+          task.isSuspended &&
+          task.focusState != FocusState.idle) {
+        task.focusState = FocusState.idle;
+        task.lastTickAtMs = null;
+      }
+    }
+    _demoteExtraActive();
+    _cleanupCurrentTask();
+  }
+
+  void _demoteExtraActive() {
+    final active = tasks.where((task) => !task.isDone && task.isActive).toList();
+    final excess = active.length - maxActiveTasks;
+    if (excess <= 0) {
+      return;
+    }
+    final demoteCandidates = <Task>[
+      ...active.where(
+        (task) =>
+            task.focusState == FocusState.idle ||
+            task.focusState == FocusState.paused,
+      ),
+    ];
+    if (demoteCandidates.length < excess) {
+      demoteCandidates.addAll(
+        active.where(
+          (task) => task.focusState == FocusState.running,
+        ),
+      );
+    }
+    demoteCandidates.sort((a, b) => b.order.compareTo(a.order));
+    for (final task in demoteCandidates.take(excess)) {
+      task.status = TaskStatus.suspended;
+      task.focusState = FocusState.idle;
+      task.lastTickAtMs = null;
+    }
+  }
+
+  void _cleanupCurrentTask() {
+    if (currentTaskId == null) {
+      return;
+    }
+    final task = tasks.firstWhere(
+      (task) => task.id == currentTaskId,
+      orElse: () => Task(
+        id: '',
+        text: '',
+        status: TaskStatus.todo,
+        createdAt: DateTime.now(),
+        order: 0,
+        focusDurationSec: 0,
+        focusRemainingSec: 0,
+        focusState: FocusState.idle,
+        overtimeSec: 0,
+      ),
+    );
+    if (task.id.isEmpty || task.isDone || task.isSuspended) {
+      currentTaskId = null;
     }
   }
 
@@ -196,7 +231,9 @@ class AppState extends ChangeNotifier {
     if (includeDone) {
       return list;
     }
-    return list.where((task) => !task.isDone).toList();
+    return list
+        .where((task) => !task.isDone && !task.isSuspended)
+        .toList();
   }
 
   AddResult addTasks(List<String> lines) {
@@ -204,24 +241,27 @@ class AppState extends ChangeNotifier {
       return line.isNotEmpty;
     }).toList();
     if (trimmed.isEmpty) {
-      return AddResult(added: 0, truncated: 0);
+      return AddResult(added: 0, suspended: 0);
     }
-    final todoCount = tasks.where((task) => !task.isDone).length;
-    final available = max(0, 5 - todoCount);
-    final toAdd = trimmed.take(available).toList();
-    final truncated = max(0, trimmed.length - toAdd.length);
-    if (toAdd.isEmpty) {
-      return AddResult(added: 0, truncated: trimmed.length);
-    }
+    var available = maxActiveTasks -
+        tasks.where((task) => !task.isDone && task.isActive).length;
     final nextOrder =
         tasks.isEmpty ? 0 : tasks.map((task) => task.order).reduce(max) + 1;
-    for (var i = 0; i < toAdd.length; i++) {
+    var suspendedAdded = 0;
+    for (var i = 0; i < trimmed.length; i++) {
       final now = DateTime.now();
+      final status =
+          available > 0 ? TaskStatus.todo : TaskStatus.suspended;
+      if (available > 0) {
+        available -= 1;
+      } else {
+        suspendedAdded += 1;
+      }
       tasks.add(
         Task(
           id: now.microsecondsSinceEpoch.toString() + i.toString(),
-          text: toAdd[i],
-          status: TaskStatus.todo,
+          text: trimmed[i],
+          status: status,
           createdAt: now,
           order: nextOrder + i,
           focusDurationSec: settings.defaultFocusMinutes * 60,
@@ -231,9 +271,10 @@ class AppState extends ChangeNotifier {
         ),
       );
     }
+    _ensureActiveLimit();
     _scheduleSave();
     notifyListeners();
-    return AddResult(added: toAdd.length, truncated: truncated);
+    return AddResult(added: trimmed.length, suspended: suspendedAdded);
   }
 
   void updateTaskText(String id, String text) {
@@ -297,19 +338,22 @@ class AppState extends ChangeNotifier {
       return;
     }
     if (task.isDone) {
-      task.status = TaskStatus.todo;
+      final activeCount =
+          tasks.where((task) => !task.isDone && task.isActive).length;
+      task.status =
+          activeCount < maxActiveTasks ? TaskStatus.todo : TaskStatus.suspended;
       task.doneAt = null;
     } else {
       task.status = TaskStatus.done;
       task.doneAt = DateTime.now();
-      if (task.focusState == FocusState.running ||
-          task.focusState == FocusState.overtime) {
+      if (task.focusState == FocusState.running) {
         task.focusState = FocusState.idle;
         task.focusRemainingSec = task.focusDurationSec;
         task.overtimeSec = 0;
         task.lastTickAtMs = null;
       }
     }
+    _ensureActiveLimit();
     _scheduleSave();
     notifyListeners();
   }
@@ -323,6 +367,7 @@ class AppState extends ChangeNotifier {
     if (currentTaskId == removed.id) {
       currentTaskId = null;
     }
+    _ensureActiveLimit();
     _scheduleSave();
     notifyListeners();
     return RemovedTask(task: removed, index: index);
@@ -331,12 +376,27 @@ class AppState extends ChangeNotifier {
   void restoreTask(RemovedTask removed) {
     final insertIndex = removed.index.clamp(0, tasks.length);
     tasks.insert(insertIndex, removed.task);
+    _ensureActiveLimit();
     _scheduleSave();
     notifyListeners();
   }
 
   void setCurrentTask(String id) {
     if (currentTaskId == id) {
+      return;
+    }
+    final task = tasks.firstWhere((task) => task.id == id, orElse: () => Task(
+      id: '',
+      text: '',
+      status: TaskStatus.todo,
+      createdAt: DateTime.now(),
+      order: 0,
+      focusDurationSec: 0,
+      focusRemainingSec: 0,
+      focusState: FocusState.idle,
+      overtimeSec: 0,
+    ));
+    if (task.id.isEmpty || task.isDone || task.isSuspended) {
       return;
     }
     final runningIndex = tasks.indexWhere(
@@ -363,15 +423,14 @@ class AppState extends ChangeNotifier {
       focusState: FocusState.idle,
       overtimeSec: 0,
     ));
-    if (task.id.isEmpty || task.isDone) {
+    if (task.id.isEmpty || task.isDone || task.isSuspended) {
       return;
     }
     for (final other in tasks) {
       if (other.id == task.id) {
         continue;
       }
-      if (other.focusState == FocusState.running ||
-          other.focusState == FocusState.overtime) {
+      if (other.focusState == FocusState.running) {
         other.focusState = FocusState.paused;
         other.lastTickAtMs = null;
       }
@@ -381,13 +440,7 @@ class AppState extends ChangeNotifier {
       task.focusRemainingSec = task.focusDurationSec;
       task.focusState = FocusState.running;
     } else if (task.focusState == FocusState.paused) {
-      if (task.focusRemainingSec == 0) {
-        task.focusState = FocusState.overtime;
-      } else {
-        task.focusState = FocusState.running;
-      }
-    } else if (task.focusState == FocusState.overtime) {
-      task.focusState = FocusState.overtime;
+      task.focusState = FocusState.running;
     } else {
       task.focusState = FocusState.running;
     }
@@ -408,11 +461,10 @@ class AppState extends ChangeNotifier {
       focusState: FocusState.idle,
       overtimeSec: 0,
     ));
-    if (task.id.isEmpty) {
+    if (task.id.isEmpty || task.isSuspended) {
       return;
     }
-    if (task.focusState == FocusState.running ||
-        task.focusState == FocusState.overtime) {
+    if (task.focusState == FocusState.running) {
       task.focusState = FocusState.paused;
       task.lastTickAtMs = null;
       _scheduleSave();
@@ -432,7 +484,7 @@ class AppState extends ChangeNotifier {
       focusState: FocusState.idle,
       overtimeSec: 0,
     ));
-    if (task.id.isEmpty) {
+    if (task.id.isEmpty || task.isSuspended) {
       return;
     }
     task.focusState = FocusState.idle;
@@ -440,6 +492,41 @@ class AppState extends ChangeNotifier {
     task.focusRemainingSec = task.focusDurationSec;
     task.overtimeSec = 0;
     task.lastTickAtMs = null;
+    _scheduleSave();
+    notifyListeners();
+  }
+
+  void toggleSuspend(String id) {
+    final task = tasks.firstWhere((task) => task.id == id, orElse: () => Task(
+      id: '',
+      text: '',
+      status: TaskStatus.todo,
+      createdAt: DateTime.now(),
+      order: 0,
+      focusDurationSec: 0,
+      focusRemainingSec: 0,
+      focusState: FocusState.idle,
+      overtimeSec: 0,
+    ));
+    if (task.id.isEmpty || task.isDone) {
+      return;
+    }
+    if (task.isSuspended) {
+      final activeCount =
+          tasks.where((task) => !task.isDone && task.isActive).length;
+      if (activeCount >= maxActiveTasks) {
+        return;
+      }
+      task.status = TaskStatus.todo;
+    } else {
+      task.status = TaskStatus.suspended;
+      task.focusState = FocusState.idle;
+      task.lastTickAtMs = null;
+      if (currentTaskId == task.id) {
+        currentTaskId = null;
+      }
+    }
+    _ensureActiveLimit();
     _scheduleSave();
     notifyListeners();
   }
@@ -484,12 +571,6 @@ class AppState extends ChangeNotifier {
     }
     _scheduleSave();
     notifyListeners();
-  }
-
-  void _moveTaskToBottom(Task task) {
-    final maxOrder =
-        tasks.isEmpty ? 0 : tasks.map((t) => t.order).reduce(max);
-    task.order = maxOrder + 1;
   }
 
   @override

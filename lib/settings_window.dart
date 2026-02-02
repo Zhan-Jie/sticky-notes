@@ -250,7 +250,7 @@ class _SettingsWindowAppState extends State<SettingsWindowApp>
                     },
                   ),
                   SwitchListTile(
-                    title: const Text('仅显示未完成'),
+                    title: const Text('仅显示进行中'),
                     value: _settings.showOnlyTodo,
                     onChanged: (value) async {
                       setState(() {
