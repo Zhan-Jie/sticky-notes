@@ -16,6 +16,7 @@ APP_DIR="$STAGE_DIR/opt/sticky-notes"
 DEBIAN_DIR="$STAGE_DIR/DEBIAN"
 ICON_DIR="$STAGE_DIR/usr/share/icons/hicolor/scalable/apps"
 ICON_DIR_512="$STAGE_DIR/usr/share/icons/hicolor/512x512/apps"
+ICON_NAME="sticky-notes-check"
 DESKTOP_DIR="$STAGE_DIR/usr/share/applications"
 
 rm -rf "$STAGE_DIR"
@@ -24,10 +25,10 @@ mkdir -p "$APP_DIR" "$DEBIAN_DIR" "$ICON_DIR" "$ICON_DIR_512" "$DESKTOP_DIR"
 cp -r build/linux/x64/release/bundle/* "$APP_DIR/"
 
 cp packaging/debian/sticky-notes.desktop "$DESKTOP_DIR/sticky-notes.desktop"
-cp assets/logo.svg "$ICON_DIR/sticky-notes.svg"
+cp assets/logo.svg "$ICON_DIR/${ICON_NAME}.svg"
 
 if command -v rsvg-convert >/dev/null 2>&1; then
-  rsvg-convert -w 512 -h 512 assets/logo.svg -o "$ICON_DIR_512/sticky-notes.png"
+  rsvg-convert -w 512 -h 512 assets/logo.svg -o "$ICON_DIR_512/${ICON_NAME}.png"
 fi
 
 sed "s/^Version:.*/Version: ${VERSION}/" packaging/debian/control \

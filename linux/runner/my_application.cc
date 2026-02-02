@@ -48,7 +48,7 @@ static void my_application_activate(GApplication* application) {
     gtk_window_set_title(window, "sticky_notes");
   }
 
-  gtk_window_set_icon_name(window, "sticky-notes");
+  gtk_window_set_icon_name(window, "sticky-notes-check");
 
   gtk_window_set_default_size(window, 1280, 720);
   gtk_widget_realize(GTK_WIDGET(window));
