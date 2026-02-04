@@ -86,16 +86,19 @@ class _ContextWindowAppState extends State<ContextWindowApp> with WindowListener
   late final WindowController _windowController;
   String _taskTitle = '';
   bool _closing = false;
-  bool _sent = false;
   bool _isPinned = false;
   bool _hoveringWindow = false;
   double _inactiveOpacity = Settings.defaults().opacity;
+  Timer? _autoSaveDebounce;
+  Timer? _blurDebounce;
+  String _lastSyncedText = '';
 
   @override
   void initState() {
     super.initState();
     _taskTitle = widget.payload.taskTitle ?? '';
     _controller = TextEditingController(text: widget.payload.contextText ?? '');
+    _lastSyncedText = _controller.text;
     windowManager.addListener(this);
     _init();
     _loadOpacity();
@@ -139,8 +142,9 @@ class _ContextWindowAppState extends State<ContextWindowApp> with WindowListener
       }
       if (text != null) {
         _controller.text = text;
+        _lastSyncedText = text;
+        _autoSaveDebounce?.cancel();
       }
-      _sent = false;
       return true;
     }
     if (call.method == 'context_focus') {
@@ -153,31 +157,38 @@ class _ContextWindowAppState extends State<ContextWindowApp> with WindowListener
   Future<void> _sendAndHide() async {
     if (_closing) return;
     _closing = true;
+    _autoSaveDebounce?.cancel();
     await _sendUpdate();
     await windowManager.hide();
     _closing = false;
   }
 
-  Future<void> _sendUpdate() async {
-    if (_sent) return;
-    _sent = true;
+  Future<void> _sendUpdate({bool force = false}) async {
     final ownerId = widget.payload.ownerWindowId;
     final taskId = widget.payload.taskId;
-    if (ownerId != null && taskId != null) {
-      final owner = WindowController.fromWindowId(ownerId);
+    if (ownerId == null || taskId == null) {
+      return;
+    }
+    final text = _controller.text;
+    if (!force && text == _lastSyncedText) {
+      return;
+    }
+    final owner = WindowController.fromWindowId(ownerId);
+    try {
       await owner.invokeMethod('context_saved', {
         'taskId': taskId,
-        'text': _controller.text,
+        'text': text,
       });
-    }
+      _lastSyncedText = text;
+    } catch (_) {}
   }
 
   Future<void> _focusAndShow() async {
-    _sent = false;
     _closing = false;
     await windowManager.center();
     await windowManager.show();
     await windowManager.focus();
+    await _applyPinState();
   }
 
   Future<void> _loadOpacity() async {
@@ -191,12 +202,45 @@ class _ContextWindowAppState extends State<ContextWindowApp> with WindowListener
     }
   }
 
-  @override
-  void onWindowBlur() {
-    if (_isPinned) {
+  Future<void> _applyPinState() async {
+    await windowManager.setAlwaysOnTop(_isPinned);
+    if (_isPinned && !_hoveringWindow) {
+      await windowManager.setOpacity(_inactiveOpacity);
       return;
     }
-    _sendAndHide();
+    await windowManager.setOpacity(1.0);
+  }
+
+  void _scheduleAutoSave([Duration delay = const Duration(milliseconds: 450)]) {
+    _autoSaveDebounce?.cancel();
+    _autoSaveDebounce = Timer(delay, () {
+      _sendUpdate();
+    });
+  }
+
+  void _handleBlur() {
+    _blurDebounce?.cancel();
+    _blurDebounce = Timer(const Duration(milliseconds: 160), () async {
+      if (!mounted) return;
+      if (_isPinned) {
+        await _sendUpdate();
+        return;
+      }
+      final focused = await windowManager.isFocused();
+      if (!focused) {
+        await _sendAndHide();
+      }
+    });
+  }
+
+  @override
+  void onWindowBlur() {
+    _handleBlur();
+  }
+
+  @override
+  void onWindowFocus() {
+    unawaited(_applyPinState());
   }
 
   @override
@@ -207,6 +251,8 @@ class _ContextWindowAppState extends State<ContextWindowApp> with WindowListener
   @override
   void dispose() {
     windowManager.removeListener(this);
+    _autoSaveDebounce?.cancel();
+    _blurDebounce?.cancel();
     _controller.dispose();
     super.dispose();
   }
@@ -283,12 +329,7 @@ class _ContextWindowAppState extends State<ContextWindowApp> with WindowListener
                             setState(() {
                               _isPinned = value;
                             });
-                            await windowManager.setAlwaysOnTop(value);
-                            if (!value) {
-                              await windowManager.setOpacity(1.0);
-                            } else if (!_hoveringWindow) {
-                              await windowManager.setOpacity(_inactiveOpacity);
-                            }
+                            await _applyPinState();
                           },
                         ),
                         IconButton(
@@ -305,6 +346,7 @@ class _ContextWindowAppState extends State<ContextWindowApp> with WindowListener
                         autofocus: true,
                         expands: true,
                         maxLines: null,
+                        onChanged: (_) => _scheduleAutoSave(),
                         textAlignVertical: TextAlignVertical.top,
                         style:
                             const TextStyle(color: Colors.white, fontSize: 16),
