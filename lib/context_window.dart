@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:window_manager/window_manager.dart';
 
+import 'models.dart';
+import 'storage.dart';
 import 'window_payload.dart';
 
 class ContextWindowLauncher {
@@ -86,6 +88,8 @@ class _ContextWindowAppState extends State<ContextWindowApp> with WindowListener
   bool _closing = false;
   bool _sent = false;
   bool _isPinned = false;
+  bool _hoveringWindow = false;
+  double _inactiveOpacity = Settings.defaults().opacity;
 
   @override
   void initState() {
@@ -94,6 +98,7 @@ class _ContextWindowAppState extends State<ContextWindowApp> with WindowListener
     _controller = TextEditingController(text: widget.payload.contextText ?? '');
     windowManager.addListener(this);
     _init();
+    _loadOpacity();
   }
 
   Future<void> _init() async {
@@ -175,6 +180,17 @@ class _ContextWindowAppState extends State<ContextWindowApp> with WindowListener
     await windowManager.focus();
   }
 
+  Future<void> _loadOpacity() async {
+    final data = await StorageService().load();
+    if (!mounted) return;
+    setState(() {
+      _inactiveOpacity = data.settings.opacity;
+    });
+    if (_isPinned && !_hoveringWindow) {
+      await windowManager.setOpacity(_inactiveOpacity);
+    }
+  }
+
   @override
   void onWindowBlur() {
     if (_isPinned) {
@@ -224,74 +240,94 @@ class _ContextWindowAppState extends State<ContextWindowApp> with WindowListener
               },
             ),
           },
-          child: Scaffold(
-            body: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Expanded(
-                        child: DragToMoveArea(
-                          child: Text(
-                            '任务记录：$_taskTitle',
-                            style: const TextStyle(
-                              fontSize: 16,
-                              fontWeight: FontWeight.w600,
-                              color: Colors.white,
+          child: MouseRegion(
+            onEnter: (_) {
+              _hoveringWindow = true;
+              if (_isPinned) {
+                windowManager.setOpacity(1.0);
+              }
+            },
+            onExit: (_) {
+              _hoveringWindow = false;
+              if (_isPinned) {
+                windowManager.setOpacity(_inactiveOpacity);
+              }
+            },
+            child: Scaffold(
+              body: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: DragToMoveArea(
+                            child: Text(
+                              '任务记录：$_taskTitle',
+                              style: const TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.white,
+                              ),
                             ),
                           ),
                         ),
-                      ),
-                      IconButton(
-                        tooltip: _isPinned ? '取消置顶' : '置顶',
-                        icon: Icon(
-                          _isPinned ? Icons.push_pin : Icons.push_pin_outlined,
+                        IconButton(
+                          tooltip: _isPinned ? '取消置顶' : '置顶',
+                          icon: Icon(
+                            _isPinned ? Icons.push_pin : Icons.push_pin_outlined,
+                          ),
+                          onPressed: () async {
+                            final value = !_isPinned;
+                            setState(() {
+                              _isPinned = value;
+                            });
+                            await windowManager.setAlwaysOnTop(value);
+                            if (!value) {
+                              await windowManager.setOpacity(1.0);
+                            } else if (!_hoveringWindow) {
+                              await windowManager.setOpacity(_inactiveOpacity);
+                            }
+                          },
                         ),
-                        onPressed: () async {
-                          final value = !_isPinned;
-                          setState(() {
-                            _isPinned = value;
-                          });
-                          await windowManager.setAlwaysOnTop(value);
-                        },
-                      ),
-                      IconButton(
-                        tooltip: '关闭',
-                        icon: const Icon(Icons.close),
-                        onPressed: _sendAndHide,
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  Expanded(
-                    child: TextField(
-                      controller: _controller,
-                      autofocus: true,
-                      expands: true,
-                      maxLines: null,
-                      textAlignVertical: TextAlignVertical.top,
-                      style: const TextStyle(color: Colors.white, fontSize: 16),
-                      decoration: const InputDecoration(
-                        border: InputBorder.none,
-                        enabledBorder: OutlineInputBorder(
-                          borderSide: BorderSide.none,
-                          borderRadius: BorderRadius.all(Radius.circular(12)),
+                        IconButton(
+                          tooltip: '关闭',
+                          icon: const Icon(Icons.close),
+                          onPressed: _sendAndHide,
                         ),
-                        focusedBorder: OutlineInputBorder(
-                          borderSide: BorderSide.none,
-                          borderRadius: BorderRadius.all(Radius.circular(12)),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    Expanded(
+                      child: TextField(
+                        controller: _controller,
+                        autofocus: true,
+                        expands: true,
+                        maxLines: null,
+                        textAlignVertical: TextAlignVertical.top,
+                        style:
+                            const TextStyle(color: Colors.white, fontSize: 16),
+                        decoration: const InputDecoration(
+                          border: InputBorder.none,
+                          enabledBorder: OutlineInputBorder(
+                            borderSide: BorderSide.none,
+                            borderRadius: BorderRadius.all(Radius.circular(12)),
+                          ),
+                          focusedBorder: OutlineInputBorder(
+                            borderSide: BorderSide.none,
+                            borderRadius: BorderRadius.all(Radius.circular(12)),
+                          ),
+                          hintText: '记录已验证结论/下一步/关键点…',
+                          hintStyle: TextStyle(color: Colors.white54),
+                          filled: true,
+                          fillColor: Color(0xFF1C1C1C),
+                          contentPadding: EdgeInsets.all(16),
                         ),
-                        hintText: '记录已验证结论/下一步/关键点…',
-                        hintStyle: TextStyle(color: Colors.white54),
-                        filled: true,
-                        fillColor: Color(0xFF1C1C1C),
-                        contentPadding: EdgeInsets.all(16),
                       ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           ),

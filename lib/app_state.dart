@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
+import 'package:local_notifier/local_notifier.dart';
 import 'models.dart';
 import 'storage.dart';
 
@@ -105,6 +106,7 @@ class AppState extends ChangeNotifier {
         task.focusRemainingSec = 0;
         task.focusState = FocusState.idle;
         task.lastTickAtMs = null;
+        _notifyFocusCompleted(task);
         return true;
       }
       task.focusRemainingSec = remaining;
@@ -112,8 +114,26 @@ class AppState extends ChangeNotifier {
     return false;
   }
 
+  void _notifyFocusCompleted(Task task) {
+    if (!settings.enableSystemNotification) {
+      return;
+    }
+    if (task.focusDurationSec <= 0) {
+      return;
+    }
+    try {
+      final title = '专注结束';
+      final body = task.text.trim().isEmpty
+          ? '番茄钟计时已结束'
+          : '任务「${task.text.trim()}」计时结束';
+      final notification = LocalNotification(title: title, body: body);
+      notification.show();
+    } catch (_) {}
+  }
+
   void _resumeRunningTasks() {
     final now = DateTime.now().millisecondsSinceEpoch;
+    var changed = false;
     for (final task in tasks) {
       if (task.focusState == FocusState.running) {
         final last = task.lastTickAtMs ?? now;
@@ -127,10 +147,16 @@ class AppState extends ChangeNotifier {
           task.focusRemainingSec = 0;
           task.focusState = FocusState.idle;
           task.lastTickAtMs = null;
+          _notifyFocusCompleted(task);
+          changed = true;
         } else {
           task.focusRemainingSec = remaining;
+          changed = true;
         }
       }
+    }
+    if (changed) {
+      _scheduleSave();
     }
   }
 
