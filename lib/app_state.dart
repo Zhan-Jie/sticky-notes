@@ -463,7 +463,9 @@ class AppState extends ChangeNotifier {
     }
     currentTaskId = task.id;
     if (task.focusState == FocusState.idle) {
-      task.focusRemainingSec = task.focusDurationSec;
+      final focusDurationSec = settings.defaultFocusMinutes * 60;
+      task.focusDurationSec = focusDurationSec;
+      task.focusRemainingSec = focusDurationSec;
       task.focusState = FocusState.running;
     } else if (task.focusState == FocusState.paused) {
       task.focusState = FocusState.running;
