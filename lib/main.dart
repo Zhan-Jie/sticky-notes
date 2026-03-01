@@ -101,6 +101,10 @@ class _StickyNotesAppState extends State<StickyNotesApp> with WindowListener {
       _appState.setForceOpaque(false);
       return true;
     }
+    if (call.method == 'archive_done_tasks') {
+      final result = await _appState.exportAllDoneTasks();
+      return result.toJson();
+    }
     return null;
   }
 
@@ -170,6 +174,11 @@ class _StickyNotesAppState extends State<StickyNotesApp> with WindowListener {
   void onWindowResize() {
     _boundsDebounce?.cancel();
     _boundsDebounce = Timer(const Duration(milliseconds: 500), _captureBounds);
+  }
+
+  @override
+  void onWindowBlur() {
+    _appState.collapseExpandedSubtasks();
   }
 
   @override
@@ -405,7 +414,8 @@ class _StickyNotesHomeState extends State<StickyNotesHome> {
                         onPressed: () {
                           widget.appState.updateSettings(
                             settings.copyWith(
-                                showOnlyTodo: !settings.showOnlyTodo),
+                              showOnlyTodo: !settings.showOnlyTodo,
+                            ),
                           );
                         },
                       ),
@@ -436,8 +446,9 @@ class _StickyNotesHomeState extends State<StickyNotesHome> {
                             task: task,
                             appState: widget.appState,
                             isCurrent: widget.appState.currentTaskId == task.id,
-                            onOpenContext: (task) =>
-                                ContextWindowLauncher.open(
+                            collapseSignal:
+                                widget.appState.subtaskCollapseSignal,
+                            onOpenContext: (task) => ContextWindowLauncher.open(
                               ownerWindowId: widget.ownerWindowId,
                               taskId: task.id,
                               taskTitle: task.text,
@@ -471,14 +482,15 @@ class _StickyNotesHomeState extends State<StickyNotesHome> {
                               if (value.contains('\n') ||
                                   value.contains('\r')) {
                                 _handlingPaste = true;
-                                    WidgetsBinding.instance
-                                        .addPostFrameCallback((_) {
-                                      _submitInput();
-                                      _closeInput();
-                                      _handlingPaste = false;
-                                    });
-                                  }
-                                },
+                                WidgetsBinding.instance.addPostFrameCallback((
+                                  _,
+                                ) {
+                                  _submitInput();
+                                  _closeInput();
+                                  _handlingPaste = false;
+                                });
+                              }
+                            },
                             decoration: InputDecoration(
                               hintText: '输入任务，回车新增（活动最多 5 条，超出自动挂起）',
                               hintStyle: const TextStyle(color: Colors.white54),
@@ -563,7 +575,6 @@ class _StickyNotesHomeState extends State<StickyNotesHome> {
         bottomHeight +
         bottomSpacing;
   }
-
 
   void _scheduleAutoResize(double targetHeight) {
     if ((targetHeight - _lastAutoHeight).abs() < 1) {

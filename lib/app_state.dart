@@ -1,8 +1,10 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:local_notifier/local_notifier.dart';
+
 import 'models.dart';
 import 'storage.dart';
 
@@ -20,6 +22,27 @@ class RemovedTask {
   final int index;
 }
 
+class ArchiveResult {
+  ArchiveResult({
+    required this.success,
+    required this.exportedCount,
+    this.filePath,
+    this.message,
+  });
+
+  final bool success;
+  final int exportedCount;
+  final String? filePath;
+  final String? message;
+
+  Map<String, dynamic> toJson() => {
+    'success': success,
+    'exportedCount': exportedCount,
+    'filePath': filePath,
+    'message': message,
+  };
+}
+
 class AppState extends ChangeNotifier {
   AppState(this.storage);
 
@@ -31,6 +54,7 @@ class AppState extends ChangeNotifier {
   String? currentTaskId;
   bool initialized = false;
   bool forceOpaque = false;
+  int subtaskCollapseSignal = 0;
 
   Timer? _ticker;
   Timer? _saveDebounce;
@@ -44,6 +68,7 @@ class AppState extends ChangeNotifier {
     _normalizeTasks();
     _resumeRunningTasks();
     _ensureActiveLimit();
+    await archiveDoneTasksIfNeeded();
     initialized = true;
     _startTicker();
     notifyListeners();
@@ -70,17 +95,7 @@ class AppState extends ChangeNotifier {
   void _tick() {
     final runningTask = tasks.firstWhere(
       (task) => task.focusState == FocusState.running,
-      orElse: () => Task(
-        id: '',
-        text: '',
-        status: TaskStatus.todo,
-        createdAt: DateTime.now(),
-        order: 0,
-        focusDurationSec: 0,
-        focusRemainingSec: 0,
-        focusState: FocusState.idle,
-        overtimeSec: 0,
-      ),
+      orElse: _placeholderTask,
     );
     if (runningTask.id.isEmpty) {
       return;
@@ -162,7 +177,7 @@ class AppState extends ChangeNotifier {
 
   void _ensureOrder() {
     tasks.sort((a, b) => a.order.compareTo(b.order));
-    for (var i = 0; i < tasks.length; i++) {
+    for (var i = 0; i < tasks.length; i += 1) {
       tasks[i].order = i;
     }
   }
@@ -185,6 +200,15 @@ class AppState extends ChangeNotifier {
         task.focusState = FocusState.idle;
         task.lastTickAtMs = null;
       }
+      task.subtasks.sort((a, b) => a.order.compareTo(b.order));
+      for (var i = 0; i < task.subtasks.length; i += 1) {
+        task.subtasks[i].order = i;
+      }
+      final activeId = task.activeSubtaskId;
+      if (activeId != null &&
+          task.subtasks.every((subtask) => subtask.id != activeId)) {
+        task.activeSubtaskId = null;
+      }
     }
   }
 
@@ -202,7 +226,9 @@ class AppState extends ChangeNotifier {
   }
 
   void _demoteExtraActive() {
-    final active = tasks.where((task) => !task.isDone && task.isActive).toList();
+    final active = tasks
+        .where((task) => !task.isDone && task.isActive)
+        .toList();
     final excess = active.length - maxActiveTasks;
     if (excess <= 0) {
       return;
@@ -216,9 +242,7 @@ class AppState extends ChangeNotifier {
     ];
     if (demoteCandidates.length < excess) {
       demoteCandidates.addAll(
-        active.where(
-          (task) => task.focusState == FocusState.running,
-        ),
+        active.where((task) => task.focusState == FocusState.running),
       );
     }
     demoteCandidates.sort((a, b) => b.order.compareTo(a.order));
@@ -233,23 +257,33 @@ class AppState extends ChangeNotifier {
     if (currentTaskId == null) {
       return;
     }
-    final task = tasks.firstWhere(
-      (task) => task.id == currentTaskId,
-      orElse: () => Task(
-        id: '',
-        text: '',
-        status: TaskStatus.todo,
-        createdAt: DateTime.now(),
-        order: 0,
-        focusDurationSec: 0,
-        focusRemainingSec: 0,
-        focusState: FocusState.idle,
-        overtimeSec: 0,
-      ),
-    );
-    if (task.id.isEmpty || task.isDone || task.isSuspended) {
+    final task = _findTask(currentTaskId!);
+    if (task == null || task.isDone || task.isSuspended) {
       currentTaskId = null;
     }
+  }
+
+  Task? _findTask(String id) {
+    for (final task in tasks) {
+      if (task.id == id) {
+        return task;
+      }
+    }
+    return null;
+  }
+
+  Task _placeholderTask() {
+    return Task(
+      id: '',
+      text: '',
+      status: TaskStatus.todo,
+      createdAt: DateTime.now(),
+      order: 0,
+      focusDurationSec: 0,
+      focusRemainingSec: 0,
+      focusState: FocusState.idle,
+      overtimeSec: 0,
+    );
   }
 
   List<Task> sortedTasks({required bool includeDone}) {
@@ -257,9 +291,35 @@ class AppState extends ChangeNotifier {
     if (includeDone) {
       return list;
     }
-    return list
-        .where((task) => !task.isDone && !task.isSuspended)
-        .toList();
+    return list.where((task) => !task.isDone && !task.isSuspended).toList();
+  }
+
+  bool isTaskInProgress(Task task) {
+    if (task.isDone || task.isSuspended) {
+      return false;
+    }
+    final activeSubtaskId = task.activeSubtaskId;
+    if (activeSubtaskId != null &&
+        task.subtasks.any((subtask) => subtask.id == activeSubtaskId)) {
+      return true;
+    }
+    if (task.subtasks.any((subtask) => subtask.isDone)) {
+      return true;
+    }
+    return task.focusState == FocusState.running || task.isOvertimePhase;
+  }
+
+  String? activeSubtaskText(Task task) {
+    final activeId = task.activeSubtaskId;
+    if (activeId == null) {
+      return null;
+    }
+    for (final subtask in task.subtasks) {
+      if (subtask.id == activeId) {
+        return subtask.text;
+      }
+    }
+    return null;
   }
 
   AddResult addTasks(List<String> lines) {
@@ -269,15 +329,16 @@ class AppState extends ChangeNotifier {
     if (trimmed.isEmpty) {
       return AddResult(added: 0, suspended: 0);
     }
-    var available = maxActiveTasks -
+    var available =
+        maxActiveTasks -
         tasks.where((task) => !task.isDone && task.isActive).length;
-    final nextOrder =
-        tasks.isEmpty ? 0 : tasks.map((task) => task.order).reduce(max) + 1;
+    final nextOrder = tasks.isEmpty
+        ? 0
+        : tasks.map((task) => task.order).reduce(max) + 1;
     var suspendedAdded = 0;
-    for (var i = 0; i < trimmed.length; i++) {
+    for (var i = 0; i < trimmed.length; i += 1) {
       final now = DateTime.now();
-      final status =
-          available > 0 ? TaskStatus.todo : TaskStatus.suspended;
+      final status = available > 0 ? TaskStatus.todo : TaskStatus.suspended;
       if (available > 0) {
         available -= 1;
       } else {
@@ -285,7 +346,7 @@ class AppState extends ChangeNotifier {
       }
       tasks.add(
         Task(
-          id: now.microsecondsSinceEpoch.toString() + i.toString(),
+          id: '${now.microsecondsSinceEpoch}$i',
           text: trimmed[i],
           status: status,
           createdAt: now,
@@ -303,19 +364,137 @@ class AppState extends ChangeNotifier {
     return AddResult(added: trimmed.length, suspended: suspendedAdded);
   }
 
+  bool addSubtask(String taskId, String text) {
+    final task = _findTask(taskId);
+    if (task == null) {
+      return false;
+    }
+    task.subtasks = List<Subtask>.from(task.subtasks);
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) {
+      return false;
+    }
+    final nextOrder = task.subtasks.isEmpty
+        ? 0
+        : task.subtasks.map((subtask) => subtask.order).reduce(max) + 1;
+    final now = DateTime.now();
+    task.subtasks.add(
+      Subtask(
+        id: '${now.microsecondsSinceEpoch}${task.subtasks.length}',
+        taskId: task.id,
+        text: trimmed,
+        status: SubtaskStatus.todo,
+        createdAt: now,
+        order: nextOrder,
+      ),
+    );
+    if (task.isDone) {
+      task.status = TaskStatus.todo;
+      task.doneAt = null;
+    }
+    _scheduleSave();
+    notifyListeners();
+    return true;
+  }
+
+  void toggleSubtaskDone(String taskId, String subtaskId) {
+    final task = _findTask(taskId);
+    if (task == null) {
+      return;
+    }
+    Subtask? subtask;
+    for (final item in task.subtasks) {
+      if (item.id == subtaskId) {
+        subtask = item;
+        break;
+      }
+    }
+    if (subtask == null) {
+      return;
+    }
+    if (subtask.isDone) {
+      subtask.status = SubtaskStatus.todo;
+      subtask.doneAt = null;
+      if (task.isDone) {
+        task.status = TaskStatus.todo;
+        task.doneAt = null;
+      }
+    } else {
+      subtask.status = SubtaskStatus.done;
+      subtask.doneAt = DateTime.now();
+      if (task.activeSubtaskId == subtask.id) {
+        _advanceActiveSubtask(task, fromOrder: subtask.order);
+      }
+    }
+    _scheduleSave();
+    notifyListeners();
+  }
+
+  void toggleActiveSubtask(String taskId, String subtaskId) {
+    final task = _findTask(taskId);
+    if (task == null) {
+      return;
+    }
+    Subtask? subtask;
+    for (final item in task.subtasks) {
+      if (item.id == subtaskId) {
+        subtask = item;
+        break;
+      }
+    }
+    if (subtask == null || subtask.isDone) {
+      return;
+    }
+    if (task.activeSubtaskId == subtask.id) {
+      task.activeSubtaskId = null;
+    } else {
+      task.activeSubtaskId = subtask.id;
+    }
+    _scheduleSave();
+    notifyListeners();
+  }
+
+  void removeSubtask(String taskId, String subtaskId) {
+    final task = _findTask(taskId);
+    if (task == null) {
+      return;
+    }
+    final index = task.subtasks.indexWhere(
+      (subtask) => subtask.id == subtaskId,
+    );
+    if (index < 0) {
+      return;
+    }
+    final removed = task.subtasks.removeAt(index);
+    for (var i = 0; i < task.subtasks.length; i += 1) {
+      task.subtasks[i].order = i;
+    }
+    if (task.activeSubtaskId == removed.id) {
+      _advanceActiveSubtask(task, fromOrder: removed.order);
+    }
+    _scheduleSave();
+    notifyListeners();
+  }
+
+  void _advanceActiveSubtask(Task task, {required int fromOrder}) {
+    final todo = task.subtasks.where((subtask) => !subtask.isDone).toList()
+      ..sort((a, b) => a.order.compareTo(b.order));
+    if (todo.isEmpty) {
+      task.activeSubtaskId = null;
+      return;
+    }
+    for (final subtask in todo) {
+      if (subtask.order > fromOrder) {
+        task.activeSubtaskId = subtask.id;
+        return;
+      }
+    }
+    task.activeSubtaskId = todo.first.id;
+  }
+
   void updateTaskText(String id, String text) {
-    final task = tasks.firstWhere((task) => task.id == id, orElse: () => Task(
-      id: '',
-      text: '',
-      status: TaskStatus.todo,
-      createdAt: DateTime.now(),
-      order: 0,
-      focusDurationSec: 0,
-      focusRemainingSec: 0,
-      focusState: FocusState.idle,
-      overtimeSec: 0,
-    ));
-    if (task.id.isEmpty) {
+    final task = _findTask(id);
+    if (task == null) {
       return;
     }
     final trimmed = text.trim();
@@ -328,18 +507,8 @@ class AppState extends ChangeNotifier {
   }
 
   void updateTaskContext(String id, String text) {
-    final task = tasks.firstWhere((task) => task.id == id, orElse: () => Task(
-      id: '',
-      text: '',
-      status: TaskStatus.todo,
-      createdAt: DateTime.now(),
-      order: 0,
-      focusDurationSec: 0,
-      focusRemainingSec: 0,
-      focusState: FocusState.idle,
-      overtimeSec: 0,
-    ));
-    if (task.id.isEmpty) {
+    final task = _findTask(id);
+    if (task == null) {
       return;
     }
     task.contextText = text.trimRight();
@@ -348,26 +517,19 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  void toggleDone(String id) {
-    final task = tasks.firstWhere((task) => task.id == id, orElse: () => Task(
-      id: '',
-      text: '',
-      status: TaskStatus.todo,
-      createdAt: DateTime.now(),
-      order: 0,
-      focusDurationSec: 0,
-      focusRemainingSec: 0,
-      focusState: FocusState.idle,
-      overtimeSec: 0,
-    ));
-    if (task.id.isEmpty) {
-      return;
+  Future<ArchiveResult?> toggleDone(String id) async {
+    final task = _findTask(id);
+    if (task == null) {
+      return null;
     }
+    final wasDone = task.isDone;
     if (task.isDone) {
-      final activeCount =
-          tasks.where((task) => !task.isDone && task.isActive).length;
-      task.status =
-          activeCount < maxActiveTasks ? TaskStatus.todo : TaskStatus.suspended;
+      final activeCount = tasks
+          .where((item) => !item.isDone && item.isActive)
+          .length;
+      task.status = activeCount < maxActiveTasks
+          ? TaskStatus.todo
+          : TaskStatus.suspended;
       task.doneAt = null;
     } else {
       task.status = TaskStatus.done;
@@ -382,6 +544,14 @@ class AppState extends ChangeNotifier {
     _ensureActiveLimit();
     _scheduleSave();
     notifyListeners();
+
+    if (!wasDone && task.isDone) {
+      final result = await archiveDoneTasksIfNeeded();
+      if (!result.success || result.exportedCount > 0) {
+        return result;
+      }
+    }
+    return null;
   }
 
   RemovedTask? removeTask(String id) {
@@ -411,22 +581,13 @@ class AppState extends ChangeNotifier {
     if (currentTaskId == id) {
       return;
     }
-    final task = tasks.firstWhere((task) => task.id == id, orElse: () => Task(
-      id: '',
-      text: '',
-      status: TaskStatus.todo,
-      createdAt: DateTime.now(),
-      order: 0,
-      focusDurationSec: 0,
-      focusRemainingSec: 0,
-      focusState: FocusState.idle,
-      overtimeSec: 0,
-    ));
-    if (task.id.isEmpty || task.isDone || task.isSuspended) {
+    collapseExpandedSubtasks();
+    final task = _findTask(id);
+    if (task == null || task.isDone || task.isSuspended) {
       return;
     }
     final runningIndex = tasks.indexWhere(
-      (task) => task.focusState == FocusState.running,
+      (item) => item.focusState == FocusState.running,
     );
     if (runningIndex >= 0 && tasks[runningIndex].id != id) {
       tasks[runningIndex].focusState = FocusState.paused;
@@ -437,19 +598,72 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  void updateSubtaskText(String taskId, String subtaskId, String text) {
+    final task = _findTask(taskId);
+    if (task == null) {
+      return;
+    }
+    Subtask? target;
+    for (final subtask in task.subtasks) {
+      if (subtask.id == subtaskId) {
+        target = subtask;
+        break;
+      }
+    }
+    if (target == null) {
+      return;
+    }
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) {
+      return;
+    }
+    target.text = trimmed;
+    _scheduleSave();
+    notifyListeners();
+  }
+
+  void reorderTodoSubtasks(String taskId, List<String> orderedTodoIds) {
+    final task = _findTask(taskId);
+    if (task == null) {
+      return;
+    }
+    final todos = task.subtasks.where((subtask) => !subtask.isDone).toList();
+    if (todos.length <= 1 || orderedTodoIds.length != todos.length) {
+      return;
+    }
+    final idSet = orderedTodoIds.toSet();
+    if (idSet.length != orderedTodoIds.length) {
+      return;
+    }
+    if (todos.any((subtask) => !idSet.contains(subtask.id))) {
+      return;
+    }
+    final byId = <String, Subtask>{};
+    for (final subtask in task.subtasks) {
+      byId[subtask.id] = subtask;
+    }
+    final reorderedTodos = <Subtask>[];
+    for (final id in orderedTodoIds) {
+      final subtask = byId[id];
+      if (subtask == null || subtask.isDone) {
+        return;
+      }
+      reorderedTodos.add(subtask);
+    }
+    final doneSubtasks =
+        task.subtasks.where((subtask) => subtask.isDone).toList()
+          ..sort((a, b) => a.order.compareTo(b.order));
+    task.subtasks = [...reorderedTodos, ...doneSubtasks];
+    for (var i = 0; i < task.subtasks.length; i += 1) {
+      task.subtasks[i].order = i;
+    }
+    _scheduleSave();
+    notifyListeners();
+  }
+
   void startTask(String id) {
-    final task = tasks.firstWhere((task) => task.id == id, orElse: () => Task(
-      id: '',
-      text: '',
-      status: TaskStatus.todo,
-      createdAt: DateTime.now(),
-      order: 0,
-      focusDurationSec: 0,
-      focusRemainingSec: 0,
-      focusState: FocusState.idle,
-      overtimeSec: 0,
-    ));
-    if (task.id.isEmpty || task.isDone || task.isSuspended) {
+    final task = _findTask(id);
+    if (task == null || task.isDone || task.isSuspended) {
       return;
     }
     for (final other in tasks) {
@@ -467,8 +681,6 @@ class AppState extends ChangeNotifier {
       task.focusDurationSec = focusDurationSec;
       task.focusRemainingSec = focusDurationSec;
       task.focusState = FocusState.running;
-    } else if (task.focusState == FocusState.paused) {
-      task.focusState = FocusState.running;
     } else {
       task.focusState = FocusState.running;
     }
@@ -478,18 +690,8 @@ class AppState extends ChangeNotifier {
   }
 
   void pauseTask(String id) {
-    final task = tasks.firstWhere((task) => task.id == id, orElse: () => Task(
-      id: '',
-      text: '',
-      status: TaskStatus.todo,
-      createdAt: DateTime.now(),
-      order: 0,
-      focusDurationSec: 0,
-      focusRemainingSec: 0,
-      focusState: FocusState.idle,
-      overtimeSec: 0,
-    ));
-    if (task.id.isEmpty || task.isSuspended) {
+    final task = _findTask(id);
+    if (task == null || task.isSuspended) {
       return;
     }
     if (task.focusState == FocusState.running) {
@@ -501,18 +703,8 @@ class AppState extends ChangeNotifier {
   }
 
   void resetTask(String id) {
-    final task = tasks.firstWhere((task) => task.id == id, orElse: () => Task(
-      id: '',
-      text: '',
-      status: TaskStatus.todo,
-      createdAt: DateTime.now(),
-      order: 0,
-      focusDurationSec: 0,
-      focusRemainingSec: 0,
-      focusState: FocusState.idle,
-      overtimeSec: 0,
-    ));
-    if (task.id.isEmpty || task.isSuspended) {
+    final task = _findTask(id);
+    if (task == null || task.isSuspended) {
       return;
     }
     task.focusState = FocusState.idle;
@@ -525,23 +717,14 @@ class AppState extends ChangeNotifier {
   }
 
   void toggleSuspend(String id) {
-    final task = tasks.firstWhere((task) => task.id == id, orElse: () => Task(
-      id: '',
-      text: '',
-      status: TaskStatus.todo,
-      createdAt: DateTime.now(),
-      order: 0,
-      focusDurationSec: 0,
-      focusRemainingSec: 0,
-      focusState: FocusState.idle,
-      overtimeSec: 0,
-    ));
-    if (task.id.isEmpty || task.isDone) {
+    final task = _findTask(id);
+    if (task == null || task.isDone) {
       return;
     }
     if (task.isSuspended) {
-      final activeCount =
-          tasks.where((task) => !task.isDone && task.isActive).length;
+      final activeCount = tasks
+          .where((item) => !item.isDone && item.isActive)
+          .length;
       if (activeCount >= maxActiveTasks) {
         return;
       }
@@ -573,6 +756,11 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  void collapseExpandedSubtasks() {
+    subtaskCollapseSignal += 1;
+    notifyListeners();
+  }
+
   void updateWindowBounds({
     required double x,
     required double y,
@@ -599,6 +787,120 @@ class AppState extends ChangeNotifier {
     }
     _scheduleSave();
     notifyListeners();
+  }
+
+  Future<ArchiveResult> exportAllDoneTasks() {
+    return archiveDoneTasksIfNeeded(forceAll: true);
+  }
+
+  Future<ArchiveResult> archiveDoneTasksIfNeeded({
+    bool forceAll = false,
+  }) async {
+    final doneTasks = tasks.where((task) => task.isDone).toList();
+    if (doneTasks.isEmpty) {
+      return ArchiveResult(success: true, exportedCount: 0);
+    }
+
+    doneTasks.sort((a, b) {
+      final aTime = a.doneAt ?? a.createdAt;
+      final bTime = b.doneAt ?? b.createdAt;
+      return bTime.compareTo(aTime);
+    });
+
+    final retention = settings.doneTaskRetention < 0
+        ? 0
+        : settings.doneTaskRetention;
+    final exportTargets = forceAll
+        ? doneTasks
+        : (doneTasks.length > retention
+              ? doneTasks.sublist(retention)
+              : <Task>[]);
+    if (exportTargets.isEmpty) {
+      return ArchiveResult(success: true, exportedCount: 0);
+    }
+
+    exportTargets.sort((a, b) {
+      final aTime = a.doneAt ?? a.createdAt;
+      final bTime = b.doneAt ?? b.createdAt;
+      return aTime.compareTo(bTime);
+    });
+
+    try {
+      final backupDir = await storage.resolveBackupDirectory(
+        settings.backupDir,
+      );
+      final now = DateTime.now();
+      final fileName = 'sticky-notes-done-${_yearMonth(now)}.md';
+      final file = File('${backupDir.path}/$fileName');
+      final content = _buildArchiveMarkdown(now, exportTargets);
+      await file.writeAsString(content, mode: FileMode.append, flush: true);
+
+      final removedIds = exportTargets.map((task) => task.id).toSet();
+      tasks.removeWhere((task) => removedIds.contains(task.id));
+      if (currentTaskId != null && removedIds.contains(currentTaskId)) {
+        currentTaskId = null;
+      }
+      _ensureOrder();
+      _ensureActiveLimit();
+      await save();
+      notifyListeners();
+
+      return ArchiveResult(
+        success: true,
+        exportedCount: exportTargets.length,
+        filePath: file.path,
+        message: '已导出 ${exportTargets.length} 个已完成任务',
+      );
+    } catch (error) {
+      return ArchiveResult(
+        success: false,
+        exportedCount: 0,
+        message: '导出失败：$error',
+      );
+    }
+  }
+
+  String _buildArchiveMarkdown(DateTime exportedAt, List<Task> exportTargets) {
+    final buffer = StringBuffer();
+    buffer.writeln('## 导出时间：${_formatDateTime(exportedAt)}');
+    buffer.writeln();
+    for (final task in exportTargets) {
+      final doneAt = task.doneAt != null ? _formatDateTime(task.doneAt!) : '-';
+      buffer.writeln('- [x] ${task.text} (doneAt: $doneAt)');
+      if (task.subtasks.isNotEmpty) {
+        buffer.writeln('  - 子任务:');
+        final subtasks = task.subtasks.toList()
+          ..sort((a, b) => a.order.compareTo(b.order));
+        for (final subtask in subtasks) {
+          final mark = subtask.isDone ? 'x' : ' ';
+          buffer.writeln('    - [$mark] ${subtask.text}');
+        }
+      }
+      final activeText = activeSubtaskText(task);
+      if (activeText != null && activeText.trim().isNotEmpty) {
+        buffer.writeln('  - 当前事项: $activeText');
+      }
+      if (task.contextText.trim().isNotEmpty) {
+        buffer.writeln('  - 上下文: ${task.contextText.trim()}');
+      }
+      buffer.writeln();
+    }
+    return buffer.toString();
+  }
+
+  String _yearMonth(DateTime value) {
+    final year = value.year.toString().padLeft(4, '0');
+    final month = value.month.toString().padLeft(2, '0');
+    return '$year-$month';
+  }
+
+  String _formatDateTime(DateTime value) {
+    final year = value.year.toString().padLeft(4, '0');
+    final month = value.month.toString().padLeft(2, '0');
+    final day = value.day.toString().padLeft(2, '0');
+    final hour = value.hour.toString().padLeft(2, '0');
+    final minute = value.minute.toString().padLeft(2, '0');
+    return '$year-$month-$day $hour:$minute';
   }
 
   @override

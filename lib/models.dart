@@ -4,6 +4,58 @@ enum TaskStatus { todo, suspended, done }
 
 enum FocusState { idle, running, paused, overtime }
 
+enum SubtaskStatus { todo, done }
+
+class Subtask {
+  Subtask({
+    required this.id,
+    required this.taskId,
+    required this.text,
+    required this.status,
+    required this.createdAt,
+    required this.order,
+    this.doneAt,
+  });
+
+  final String id;
+  final String taskId;
+  String text;
+  SubtaskStatus status;
+  DateTime createdAt;
+  DateTime? doneAt;
+  int order;
+
+  bool get isDone => status == SubtaskStatus.done;
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'taskId': taskId,
+    'text': text,
+    'status': status.name,
+    'createdAt': createdAt.toIso8601String(),
+    'doneAt': doneAt?.toIso8601String(),
+    'order': order,
+  };
+
+  factory Subtask.fromJson(Map<String, dynamic> json) {
+    final createdAt = DateTime.tryParse(json['createdAt'] ?? '');
+    final doneAt = DateTime.tryParse(json['doneAt'] ?? '');
+    final statusValue = SubtaskStatus.values.firstWhere(
+      (value) => value.name == json['status'],
+      orElse: () => SubtaskStatus.todo,
+    );
+    return Subtask(
+      id: json['id'] ?? '',
+      taskId: json['taskId'] ?? '',
+      text: json['text'] ?? '',
+      status: statusValue,
+      createdAt: createdAt ?? DateTime.now(),
+      doneAt: doneAt,
+      order: json['order'] ?? 0,
+    );
+  }
+}
+
 class Task {
   Task({
     required this.id,
@@ -15,11 +67,13 @@ class Task {
     required this.focusRemainingSec,
     required this.focusState,
     required this.overtimeSec,
+    List<Subtask>? subtasks,
+    this.activeSubtaskId,
     this.doneAt,
     this.contextText = '',
     this.contextUpdatedAt,
     this.lastTickAtMs,
-  });
+  }) : subtasks = List<Subtask>.from(subtasks ?? const []);
 
   final String id;
   String text;
@@ -34,6 +88,8 @@ class Task {
   int focusRemainingSec;
   int overtimeSec;
   int? lastTickAtMs;
+  List<Subtask> subtasks;
+  String? activeSubtaskId;
 
   bool get isDone => status == TaskStatus.done;
 
@@ -46,26 +102,27 @@ class Task {
       (focusState == FocusState.overtime || overtimeSec > 0);
 
   Map<String, dynamic> toJson() => {
-        'id': id,
-        'text': text,
-        'status': status.name,
-        'createdAt': createdAt.toIso8601String(),
-        'doneAt': doneAt?.toIso8601String(),
-        'order': order,
-        'contextText': contextText,
-        'contextUpdatedAt': contextUpdatedAt?.toIso8601String(),
-        'focusState': focusState.name,
-        'focusDurationSec': focusDurationSec,
-        'focusRemainingSec': focusRemainingSec,
-        'overtimeSec': overtimeSec,
-        'lastTickAtMs': lastTickAtMs,
-      };
+    'id': id,
+    'text': text,
+    'status': status.name,
+    'createdAt': createdAt.toIso8601String(),
+    'doneAt': doneAt?.toIso8601String(),
+    'order': order,
+    'contextText': contextText,
+    'contextUpdatedAt': contextUpdatedAt?.toIso8601String(),
+    'focusState': focusState.name,
+    'focusDurationSec': focusDurationSec,
+    'focusRemainingSec': focusRemainingSec,
+    'overtimeSec': overtimeSec,
+    'lastTickAtMs': lastTickAtMs,
+    'subtasks': subtasks.map((subtask) => subtask.toJson()).toList(),
+    'activeSubtaskId': activeSubtaskId,
+  };
 
   factory Task.fromJson(Map<String, dynamic> json) {
     final createdAt = DateTime.tryParse(json['createdAt'] ?? '');
     final doneAt = DateTime.tryParse(json['doneAt'] ?? '');
-    final contextUpdatedAt =
-        DateTime.tryParse(json['contextUpdatedAt'] ?? '');
+    final contextUpdatedAt = DateTime.tryParse(json['contextUpdatedAt'] ?? '');
     final statusValue = TaskStatus.values.firstWhere(
       (value) => value.name == json['status'],
       orElse: () => TaskStatus.todo,
@@ -74,6 +131,9 @@ class Task {
       (value) => value.name == json['focusState'],
       orElse: () => FocusState.idle,
     );
+    final rawSubtasks = (json['subtasks'] as List<dynamic>? ?? [])
+        .whereType<Map<String, dynamic>>()
+        .toList();
     return Task(
       id: json['id'] ?? '',
       text: json['text'] ?? '',
@@ -88,6 +148,8 @@ class Task {
       focusRemainingSec: json['focusRemainingSec'] ?? 1500,
       overtimeSec: json['overtimeSec'] ?? 0,
       lastTickAtMs: json['lastTickAtMs'],
+      subtasks: rawSubtasks.map(Subtask.fromJson).toList(),
+      activeSubtaskId: json['activeSubtaskId']?.toString(),
     );
   }
 }
@@ -100,6 +162,8 @@ class Settings {
     required this.fontScale,
     required this.defaultFocusMinutes,
     required this.enableSystemNotification,
+    required this.doneTaskRetention,
+    this.backupDir,
     this.windowX,
     this.windowY,
     this.windowW,
@@ -112,6 +176,8 @@ class Settings {
   final double fontScale;
   final int defaultFocusMinutes;
   final bool enableSystemNotification;
+  final int doneTaskRetention;
+  final String? backupDir;
   final double? windowX;
   final double? windowY;
   final double? windowW;
@@ -124,6 +190,8 @@ class Settings {
     double? fontScale,
     int? defaultFocusMinutes,
     bool? enableSystemNotification,
+    int? doneTaskRetention,
+    String? backupDir,
     double? windowX,
     double? windowY,
     double? windowW,
@@ -137,6 +205,8 @@ class Settings {
       defaultFocusMinutes: defaultFocusMinutes ?? this.defaultFocusMinutes,
       enableSystemNotification:
           enableSystemNotification ?? this.enableSystemNotification,
+      doneTaskRetention: doneTaskRetention ?? this.doneTaskRetention,
+      backupDir: backupDir ?? this.backupDir,
       windowX: windowX ?? this.windowX,
       windowY: windowY ?? this.windowY,
       windowW: windowW ?? this.windowW,
@@ -152,21 +222,24 @@ class Settings {
       fontScale: 1.0,
       defaultFocusMinutes: 25,
       enableSystemNotification: true,
+      doneTaskRetention: 10,
     );
   }
 
   Map<String, dynamic> toJson() => {
-        'alwaysOnTop': alwaysOnTop,
-        'opacity': opacity,
-        'showOnlyTodo': showOnlyTodo,
-        'fontScale': fontScale,
-        'defaultFocusMinutes': defaultFocusMinutes,
-        'enableSystemNotification': enableSystemNotification,
-        'windowX': windowX,
-        'windowY': windowY,
-        'windowW': windowW,
-        'windowH': windowH,
-      };
+    'alwaysOnTop': alwaysOnTop,
+    'opacity': opacity,
+    'showOnlyTodo': showOnlyTodo,
+    'fontScale': fontScale,
+    'defaultFocusMinutes': defaultFocusMinutes,
+    'enableSystemNotification': enableSystemNotification,
+    'doneTaskRetention': doneTaskRetention,
+    'backupDir': backupDir,
+    'windowX': windowX,
+    'windowY': windowY,
+    'windowW': windowW,
+    'windowH': windowH,
+  };
 
   factory Settings.fromJson(Map<String, dynamic> json) {
     return Settings(
@@ -176,6 +249,8 @@ class Settings {
       fontScale: (json['fontScale'] ?? 1.0).toDouble(),
       defaultFocusMinutes: json['defaultFocusMinutes'] ?? 25,
       enableSystemNotification: json['enableSystemNotification'] ?? true,
+      doneTaskRetention: json['doneTaskRetention'] ?? 10,
+      backupDir: json['backupDir']?.toString(),
       windowX: (json['windowX'] as num?)?.toDouble(),
       windowY: (json['windowY'] as num?)?.toDouble(),
       windowW: (json['windowW'] as num?)?.toDouble(),
@@ -196,10 +271,10 @@ class AppData {
   final String? currentTaskId;
 
   Map<String, dynamic> toJson() => {
-        'tasks': tasks.map((task) => task.toJson()).toList(),
-        'settings': settings.toJson(),
-        'currentTaskId': currentTaskId,
-      };
+    'tasks': tasks.map((task) => task.toJson()).toList(),
+    'settings': settings.toJson(),
+    'currentTaskId': currentTaskId,
+  };
 
   factory AppData.fromJson(Map<String, dynamic> json) {
     final rawTasks = (json['tasks'] as List<dynamic>? ?? [])
@@ -214,11 +289,8 @@ class AppData {
     );
   }
 
-  static AppData empty() => AppData(
-        tasks: [],
-        settings: Settings.defaults(),
-        currentTaskId: null,
-      );
+  static AppData empty() =>
+      AppData(tasks: [], settings: Settings.defaults(), currentTaskId: null);
 }
 
 String encodeAppData(AppData data) => jsonEncode(data.toJson());
