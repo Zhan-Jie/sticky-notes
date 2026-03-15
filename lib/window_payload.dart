@@ -4,44 +4,47 @@ enum WindowType { main, context, settings }
 
 class WindowPayload {
   WindowPayload.main()
-      : type = WindowType.main,
-        taskId = null,
-        taskTitle = null,
-        contextText = null,
-        ownerWindowId = null,
-        settings = null;
+    : type = WindowType.main,
+      taskId = null,
+      subtaskId = null,
+      taskTitle = null,
+      contextText = null,
+      ownerWindowId = null,
+      settings = null;
 
   WindowPayload.context({
     required this.taskId,
+    required this.subtaskId,
     required this.taskTitle,
     required this.contextText,
     required this.ownerWindowId,
-  })  : type = WindowType.context,
-        settings = null;
+  }) : type = WindowType.context,
+       settings = null;
 
-  WindowPayload.settings({
-    required this.ownerWindowId,
-    required this.settings,
-  })  : type = WindowType.settings,
-        taskId = null,
-        taskTitle = null,
-        contextText = null;
+  WindowPayload.settings({required this.ownerWindowId, required this.settings})
+    : type = WindowType.settings,
+      taskId = null,
+      subtaskId = null,
+      taskTitle = null,
+      contextText = null;
 
   final WindowType type;
   final String? taskId;
+  final String? subtaskId;
   final String? taskTitle;
   final String? contextText;
   final String? ownerWindowId;
   final Map<String, dynamic>? settings;
 
   Map<String, dynamic> toJson() => {
-        'type': type.name,
-        'taskId': taskId,
-        'taskTitle': taskTitle,
-        'contextText': contextText,
-        'ownerWindowId': ownerWindowId,
-        'settings': settings,
-      };
+    'type': type.name,
+    'taskId': taskId,
+    'subtaskId': subtaskId,
+    'taskTitle': taskTitle,
+    'contextText': contextText,
+    'ownerWindowId': ownerWindowId,
+    'settings': settings,
+  };
 
   String encode() => jsonEncode(toJson());
 
@@ -61,6 +64,7 @@ class WindowPayload {
       if (typeValue == WindowType.context) {
         return WindowPayload.context(
           taskId: map['taskId']?.toString(),
+          subtaskId: map['subtaskId']?.toString(),
           taskTitle: map['taskTitle']?.toString(),
           contextText: map['contextText']?.toString() ?? '',
           ownerWindowId: map['ownerWindowId']?.toString(),

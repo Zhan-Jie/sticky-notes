@@ -55,6 +55,8 @@ class AppState extends ChangeNotifier {
   bool initialized = false;
   bool forceOpaque = false;
   int subtaskCollapseSignal = 0;
+  String? archiveNoticeMessage;
+  int archiveNoticeSignal = 0;
 
   Timer? _ticker;
   Timer? _saveDebounce;
@@ -68,7 +70,10 @@ class AppState extends ChangeNotifier {
     _normalizeTasks();
     _resumeRunningTasks();
     _ensureActiveLimit();
-    await archiveDoneTasksIfNeeded();
+    final archiveResult = await archiveDoneTasksIfNeeded();
+    if (!archiveResult.success || archiveResult.exportedCount > 0) {
+      _publishArchiveNotice(archiveResult);
+    }
     initialized = true;
     _startTicker();
     notifyListeners();
@@ -267,6 +272,15 @@ class AppState extends ChangeNotifier {
     for (final task in tasks) {
       if (task.id == id) {
         return task;
+      }
+    }
+    return null;
+  }
+
+  Subtask? _findSubtask(Task task, String subtaskId) {
+    for (final subtask in task.subtasks) {
+      if (subtask.id == subtaskId) {
+        return subtask;
       }
     }
     return null;
@@ -517,6 +531,21 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  void updateSubtaskContext(String taskId, String subtaskId, String text) {
+    final task = _findTask(taskId);
+    if (task == null) {
+      return;
+    }
+    final subtask = _findSubtask(task, subtaskId);
+    if (subtask == null) {
+      return;
+    }
+    subtask.contextText = text.trimRight();
+    subtask.contextUpdatedAt = DateTime.now();
+    _scheduleSave();
+    notifyListeners();
+  }
+
   Future<ArchiveResult?> toggleDone(String id) async {
     final task = _findTask(id);
     if (task == null) {
@@ -548,10 +577,19 @@ class AppState extends ChangeNotifier {
     if (!wasDone && task.isDone) {
       final result = await archiveDoneTasksIfNeeded();
       if (!result.success || result.exportedCount > 0) {
+        _publishArchiveNotice(result);
         return result;
       }
     }
     return null;
+  }
+
+  void _publishArchiveNotice(ArchiveResult result) {
+    archiveNoticeMessage = result.success
+        ? '已自动归档 ${result.exportedCount} 个已完成任务'
+        : (result.message ?? '自动归档失败，应用内数据已保留');
+    archiveNoticeSignal += 1;
+    notifyListeners();
   }
 
   RemovedTask? removeTask(String id) {
@@ -830,7 +868,7 @@ class AppState extends ChangeNotifier {
         settings.backupDir,
       );
       final now = DateTime.now();
-      final fileName = 'sticky-notes-done-${_yearMonth(now)}.md';
+      final fileName = 'sticky-notes-done-${_archiveTimestamp(now)}.md';
       final file = File('${backupDir.path}/$fileName');
       final content = _buildArchiveMarkdown(now, exportTargets);
       await file.writeAsString(content, mode: FileMode.append, flush: true);
@@ -874,24 +912,55 @@ class AppState extends ChangeNotifier {
         for (final subtask in subtasks) {
           final mark = subtask.isDone ? 'x' : ' ';
           buffer.writeln('    - [$mark] ${subtask.text}');
+          _writeIndentedTextBlock(
+            buffer,
+            label: '记录',
+            text: subtask.contextText,
+            indent: '      ',
+          );
         }
       }
       final activeText = activeSubtaskText(task);
       if (activeText != null && activeText.trim().isNotEmpty) {
         buffer.writeln('  - 当前事项: $activeText');
       }
-      if (task.contextText.trim().isNotEmpty) {
-        buffer.writeln('  - 上下文: ${task.contextText.trim()}');
-      }
+      _writeIndentedTextBlock(
+        buffer,
+        label: '上下文',
+        text: task.contextText,
+        indent: '  ',
+      );
       buffer.writeln();
     }
     return buffer.toString();
   }
 
-  String _yearMonth(DateTime value) {
+  void _writeIndentedTextBlock(
+    StringBuffer buffer, {
+    required String label,
+    required String text,
+    required String indent,
+  }) {
+    final normalized = text.trimRight();
+    if (normalized.isEmpty) {
+      return;
+    }
+    final lines = normalized.split('\n');
+    buffer.writeln('$indent- $label: ${lines.first}');
+    for (final line in lines.skip(1)) {
+      buffer.writeln('$indent  $line');
+    }
+  }
+
+  String _archiveTimestamp(DateTime value) {
     final year = value.year.toString().padLeft(4, '0');
     final month = value.month.toString().padLeft(2, '0');
-    return '$year-$month';
+    final day = value.day.toString().padLeft(2, '0');
+    final hour = value.hour.toString().padLeft(2, '0');
+    final minute = value.minute.toString().padLeft(2, '0');
+    final second = value.second.toString().padLeft(2, '0');
+    final millisecond = value.millisecond.toString().padLeft(3, '0');
+    return '$year-$month-$day-$hour-$minute-$second-$millisecond';
   }
 
   String _formatDateTime(DateTime value) {

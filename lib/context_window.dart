@@ -13,13 +13,16 @@ class ContextWindowLauncher {
   static Future<void> open({
     required String ownerWindowId,
     required String taskId,
+    String? subtaskId,
     required String taskTitle,
     required String contextText,
   }) async {
     final controllers = await WindowController.getAll();
     for (final controller in controllers) {
       final payload = WindowPayload.parse(controller.arguments);
-      if (payload.type == WindowType.context && payload.taskId == taskId) {
+      if (payload.type == WindowType.context &&
+          payload.taskId == taskId &&
+          payload.subtaskId == subtaskId) {
         await _safeInvoke(controller, 'context_update', {
           'taskTitle': taskTitle,
           'contextText': contextText,
@@ -30,15 +33,13 @@ class ContextWindowLauncher {
     }
     final payload = WindowPayload.context(
       taskId: taskId,
+      subtaskId: subtaskId,
       taskTitle: taskTitle,
       contextText: contextText,
       ownerWindowId: ownerWindowId,
     );
     final controller = await WindowController.create(
-      WindowConfiguration(
-        hiddenAtLaunch: true,
-        arguments: payload.encode(),
-      ),
+      WindowConfiguration(hiddenAtLaunch: true, arguments: payload.encode()),
     );
     await _invokeWithRetry(controller, 'context_focus');
   }
@@ -81,7 +82,8 @@ class ContextWindowApp extends StatefulWidget {
   State<ContextWindowApp> createState() => _ContextWindowAppState();
 }
 
-class _ContextWindowAppState extends State<ContextWindowApp> with WindowListener {
+class _ContextWindowAppState extends State<ContextWindowApp>
+    with WindowListener {
   late final TextEditingController _controller;
   late final WindowController _windowController;
   String _taskTitle = '';
@@ -177,6 +179,7 @@ class _ContextWindowAppState extends State<ContextWindowApp> with WindowListener
     try {
       await owner.invokeMethod('context_saved', {
         'taskId': taskId,
+        'subtaskId': widget.payload.subtaskId,
         'text': text,
       });
       _lastSyncedText = text;
@@ -322,7 +325,9 @@ class _ContextWindowAppState extends State<ContextWindowApp> with WindowListener
                         IconButton(
                           tooltip: _isPinned ? '取消置顶' : '置顶',
                           icon: Icon(
-                            _isPinned ? Icons.push_pin : Icons.push_pin_outlined,
+                            _isPinned
+                                ? Icons.push_pin
+                                : Icons.push_pin_outlined,
                           ),
                           onPressed: () async {
                             final value = !_isPinned;
@@ -348,8 +353,10 @@ class _ContextWindowAppState extends State<ContextWindowApp> with WindowListener
                         maxLines: null,
                         onChanged: (_) => _scheduleAutoSave(),
                         textAlignVertical: TextAlignVertical.top,
-                        style:
-                            const TextStyle(color: Colors.white, fontSize: 16),
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 16,
+                        ),
                         decoration: const InputDecoration(
                           border: InputBorder.none,
                           enabledBorder: OutlineInputBorder(

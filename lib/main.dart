@@ -71,9 +71,14 @@ class _StickyNotesAppState extends State<StickyNotesApp> with WindowListener {
           ? (call.arguments as Map).cast<String, dynamic>()
           : <String, dynamic>{};
       final taskId = args['taskId']?.toString();
+      final subtaskId = args['subtaskId']?.toString();
       final text = args['text']?.toString() ?? '';
       if (taskId != null && taskId.isNotEmpty) {
-        _appState.updateTaskContext(taskId, text);
+        if (subtaskId != null && subtaskId.isNotEmpty) {
+          _appState.updateSubtaskContext(taskId, subtaskId, text);
+        } else {
+          _appState.updateTaskContext(taskId, text);
+        }
       }
       return true;
     }
@@ -259,14 +264,33 @@ class _StickyNotesHomeState extends State<StickyNotesHome> {
   bool _hoveringWindow = false;
   bool _showInput = false;
   Timer? _resizeDebounce;
+  Timer? _archiveNoticeTimer;
   double _lastAutoHeight = 0;
+  int _lastArchiveNoticeSignal = 0;
+  String? _archiveNotice;
 
   @override
   void dispose() {
     _inputController.dispose();
     _inputFocus.dispose();
     _resizeDebounce?.cancel();
+    _archiveNoticeTimer?.cancel();
     super.dispose();
+  }
+
+  void _showArchiveNotice(String message) {
+    _archiveNoticeTimer?.cancel();
+    setState(() {
+      _archiveNotice = message;
+    });
+    _archiveNoticeTimer = Timer(const Duration(seconds: 4), () {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _archiveNotice = null;
+      });
+    });
   }
 
   void _submitInput() {
@@ -293,7 +317,7 @@ class _StickyNotesHomeState extends State<StickyNotesHome> {
     final taskCount = widget.appState
         .sortedTasks(includeDone: !widget.appState.settings.showOnlyTodo)
         .length;
-    final targetHeight = _calculateWindowHeight(taskCount, true);
+    final targetHeight = _calculateWindowHeight(taskCount, true, false);
     final size = await windowManager.getSize();
     if (size.height < targetHeight) {
       await windowManager.setSize(Size(size.width, targetHeight));
@@ -319,7 +343,7 @@ class _StickyNotesHomeState extends State<StickyNotesHome> {
     final taskCount = widget.appState
         .sortedTasks(includeDone: !widget.appState.settings.showOnlyTodo)
         .length;
-    final targetHeight = _calculateWindowHeight(taskCount, false);
+    final targetHeight = _calculateWindowHeight(taskCount, false, false);
     _scheduleAutoResize(targetHeight);
   }
 
@@ -339,7 +363,24 @@ class _StickyNotesHomeState extends State<StickyNotesHome> {
     final tasks = widget.appState.sortedTasks(
       includeDone: !settings.showOnlyTodo,
     );
-    final desiredHeight = _calculateWindowHeight(tasks.length, _showInput);
+    final archiveNoticeSignal = widget.appState.archiveNoticeSignal;
+    final archiveNoticeMessage = widget.appState.archiveNoticeMessage;
+    if (archiveNoticeSignal != _lastArchiveNoticeSignal &&
+        archiveNoticeMessage != null &&
+        archiveNoticeMessage.isNotEmpty) {
+      _lastArchiveNoticeSignal = archiveNoticeSignal;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) {
+          return;
+        }
+        _showArchiveNotice(archiveNoticeMessage);
+      });
+    }
+    final desiredHeight = _calculateWindowHeight(
+      tasks.length,
+      _showInput,
+      _archiveNotice != null,
+    );
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       if (forceOpaque || _hoveringWindow) {
@@ -428,6 +469,50 @@ class _StickyNotesHomeState extends State<StickyNotesHome> {
                   ),
                 ),
               ),
+              AnimatedSwitcher(
+                duration: const Duration(milliseconds: 180),
+                child: _archiveNotice == null
+                    ? const SizedBox.shrink()
+                    : Container(
+                        key: ValueKey(_archiveNotice),
+                        width: double.infinity,
+                        margin: const EdgeInsets.only(bottom: 8),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 10,
+                        ),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF243634),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: const Color(0xFF5C8D89),
+                            width: 1,
+                          ),
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(
+                              Icons.archive_outlined,
+                              size: 18,
+                              color: Color(0xFFB8E0DA),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                _archiveNotice!,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 13,
+                                  height: 1.25,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+              ),
               const SizedBox(height: 8),
               Expanded(
                 child: tasks.isEmpty
@@ -448,12 +533,17 @@ class _StickyNotesHomeState extends State<StickyNotesHome> {
                             isCurrent: widget.appState.currentTaskId == task.id,
                             collapseSignal:
                                 widget.appState.subtaskCollapseSignal,
-                            onOpenContext: (task) => ContextWindowLauncher.open(
-                              ownerWindowId: widget.ownerWindowId,
-                              taskId: task.id,
-                              taskTitle: task.text,
-                              contextText: task.contextText,
-                            ),
+                            onOpenContext: (task, subtask) =>
+                                ContextWindowLauncher.open(
+                                  ownerWindowId: widget.ownerWindowId,
+                                  taskId: task.id,
+                                  subtaskId: subtask?.id,
+                                  taskTitle: subtask == null
+                                      ? task.text
+                                      : '${task.text} / ${subtask.text}',
+                                  contextText:
+                                      subtask?.contextText ?? task.contextText,
+                                ),
                           );
                         },
                       ),
@@ -558,17 +648,23 @@ class _StickyNotesHomeState extends State<StickyNotesHome> {
     return visibleCount * taskHeight;
   }
 
-  double _calculateWindowHeight(int taskCount, bool showInput) {
+  double _calculateWindowHeight(
+    int taskCount,
+    bool showInput,
+    bool showArchiveNotice,
+  ) {
     const paddingVertical = 24.0;
     const headerHeight = 44.0;
     const spacing = 8.0;
     const inputHeight = 56.0;
     const addButtonHeight = 44.0;
     const bottomSpacing = 8.0;
+    const archiveNoticeHeight = 54.0;
     final listHeight = _calculateListHeight(taskCount);
     final bottomHeight = showInput ? inputHeight : addButtonHeight;
     return paddingVertical +
         headerHeight +
+        (showArchiveNotice ? archiveNoticeHeight : 0) +
         spacing +
         listHeight +
         spacing +

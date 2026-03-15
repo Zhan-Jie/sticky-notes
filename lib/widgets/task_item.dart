@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:window_manager/window_manager.dart';
 
 import '../app_state.dart';
 import '../models.dart';
@@ -19,7 +20,7 @@ class TaskItem extends StatefulWidget {
   final AppState appState;
   final bool isCurrent;
   final int collapseSignal;
-  final Future<void> Function(Task task) onOpenContext;
+  final Future<void> Function(Task task, Subtask? subtask) onOpenContext;
 
   @override
   State<TaskItem> createState() => _TaskItemState();
@@ -200,20 +201,8 @@ class _TaskItemState extends State<TaskItem> {
   }
 
   Future<void> _handleToggleDone(Task task) async {
-    final result = await widget.appState.toggleDone(task.id);
-    if (!mounted || result == null) {
-      return;
-    }
-    if (result.success) {
-      final path = result.filePath ?? '';
-      final suffix = path.isEmpty ? '' : '\n$filePathLabel$path';
-      _showMessage('已自动归档 ${result.exportedCount} 个已完成任务$suffix');
-      return;
-    }
-    _showMessage(result.message ?? '归档失败，已保留应用内数据');
+    await widget.appState.toggleDone(task.id);
   }
-
-  static const String filePathLabel = '文件：';
 
   void _showMessage(String message) {
     final messenger = ScaffoldMessenger.of(context);
@@ -252,6 +241,7 @@ class _TaskItemState extends State<TaskItem> {
     final activeSubtaskText = widget.appState.activeSubtaskText(task);
     final hasActiveSubtask =
         activeSubtaskText != null && activeSubtaskText.trim().isNotEmpty;
+    final hasTaskContext = task.contextText.trim().isNotEmpty;
 
     return MouseRegion(
       onEnter: (_) => setState(() => _hovered = true),
@@ -435,9 +425,12 @@ class _TaskItemState extends State<TaskItem> {
                                       children: [
                                         _buildActionButton(
                                           tooltip: '记录',
-                                          icon: Icons.edit_note_outlined,
-                                          onPressed: () =>
-                                              widget.onOpenContext(task),
+                                          icon: hasTaskContext
+                                              ? Icons.note_alt_outlined
+                                              : Icons.edit_note_outlined,
+                                          onPressed: () => unawaited(
+                                            widget.onOpenContext(task, null),
+                                          ),
                                         ),
                                         _buildActionButton(
                                           tooltip: _expanded ? '收起子任务' : '子任务',
@@ -468,7 +461,7 @@ class _TaskItemState extends State<TaskItem> {
                                             tooltip: '删除',
                                             icon: Icons.delete_outline,
                                             onPressed: () =>
-                                                _requestDelete(context, task),
+                                                _requestDelete(task),
                                           ),
                                       ],
                                     ),
@@ -791,6 +784,26 @@ class _TaskItemState extends State<TaskItem> {
                   MouseRegion(
                     cursor: SystemMouseCursors.click,
                     child: IconButton(
+                      tooltip: '记录子任务',
+                      icon: Icon(
+                        subtask.contextText.trim().isNotEmpty
+                            ? Icons.note_alt_outlined
+                            : Icons.edit_note_outlined,
+                        size: 16,
+                        color: Colors.white54,
+                      ),
+                      onPressed: () =>
+                          unawaited(widget.onOpenContext(task, subtask)),
+                      visualDensity: VisualDensity.compact,
+                      constraints: const BoxConstraints.tightFor(
+                        width: 28,
+                        height: 28,
+                      ),
+                    ),
+                  ),
+                  MouseRegion(
+                    cursor: SystemMouseCursors.click,
+                    child: IconButton(
                       tooltip: subtask.isDone ? '标记未完成' : '完成子任务',
                       icon: Icon(
                         subtask.isDone
@@ -820,9 +833,7 @@ class _TaskItemState extends State<TaskItem> {
                         size: 16,
                         color: Colors.white54,
                       ),
-                      onPressed: () {
-                        widget.appState.removeSubtask(task.id, subtask.id);
-                      },
+                      onPressed: () => _requestSubtaskDelete(task, subtask),
                       visualDensity: VisualDensity.compact,
                       constraints: const BoxConstraints.tightFor(
                         width: 28,
@@ -940,7 +951,27 @@ class _TaskItemState extends State<TaskItem> {
     return '${minutes.toString().padLeft(2, '0')}:${secs.toString().padLeft(2, '0')}';
   }
 
-  void _requestDelete(BuildContext context, Task task) {
+  Future<void> _requestSubtaskDelete(Task task, Subtask subtask) async {
+    final confirmed = await _confirmDelete(
+      title: '删除子任务？',
+      message: '将删除子任务“${subtask.text}”。',
+      confirmLabel: '删除子任务',
+    );
+    if (confirmed != true) {
+      return;
+    }
+    widget.appState.removeSubtask(task.id, subtask.id);
+  }
+
+  Future<void> _requestDelete(Task task) async {
+    final confirmed = await _confirmDelete(
+      title: '删除任务？',
+      message: '将删除任务“${task.text}”及其子任务记录。',
+      confirmLabel: '删除任务',
+    );
+    if (confirmed != true || !mounted) {
+      return;
+    }
     final removed = widget.appState.removeTask(task.id);
     if (removed == null) {
       return;
@@ -964,5 +995,53 @@ class _TaskItemState extends State<TaskItem> {
         ),
       ),
     );
+  }
+
+  Future<bool?> _confirmDelete({
+    required String title,
+    required String message,
+    required String confirmLabel,
+  }) async {
+    final shouldRestoreOpaque = !widget.appState.forceOpaque;
+    if (shouldRestoreOpaque) {
+      widget.appState.setForceOpaque(true);
+    }
+    await windowManager.setOpacity(1.0);
+    try {
+      if (!mounted) {
+        return false;
+      }
+      return await showDialog<bool>(
+        context: context,
+        barrierColor: Colors.black45,
+        builder: (dialogContext) {
+          return AlertDialog(
+            backgroundColor: const Color(0xFF202020),
+            title: Text(title, style: const TextStyle(color: Colors.white)),
+            content: Text(
+              message,
+              style: const TextStyle(color: Colors.white70),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(false),
+                child: const Text('取消'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(dialogContext).pop(true),
+                style: FilledButton.styleFrom(
+                  backgroundColor: const Color(0xFFB84C3B),
+                ),
+                child: Text(confirmLabel),
+              ),
+            ],
+          );
+        },
+      );
+    } finally {
+      if (shouldRestoreOpaque) {
+        widget.appState.setForceOpaque(false);
+      }
+    }
   }
 }

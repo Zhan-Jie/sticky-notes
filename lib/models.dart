@@ -15,6 +15,8 @@ class Subtask {
     required this.createdAt,
     required this.order,
     this.doneAt,
+    this.contextText = '',
+    this.contextUpdatedAt,
   });
 
   final String id;
@@ -24,6 +26,8 @@ class Subtask {
   DateTime createdAt;
   DateTime? doneAt;
   int order;
+  String contextText;
+  DateTime? contextUpdatedAt;
 
   bool get isDone => status == SubtaskStatus.done;
 
@@ -35,11 +39,14 @@ class Subtask {
     'createdAt': createdAt.toIso8601String(),
     'doneAt': doneAt?.toIso8601String(),
     'order': order,
+    'contextText': contextText,
+    'contextUpdatedAt': contextUpdatedAt?.toIso8601String(),
   };
 
   factory Subtask.fromJson(Map<String, dynamic> json) {
     final createdAt = DateTime.tryParse(json['createdAt'] ?? '');
     final doneAt = DateTime.tryParse(json['doneAt'] ?? '');
+    final contextUpdatedAt = DateTime.tryParse(json['contextUpdatedAt'] ?? '');
     final statusValue = SubtaskStatus.values.firstWhere(
       (value) => value.name == json['status'],
       orElse: () => SubtaskStatus.todo,
@@ -52,6 +59,8 @@ class Subtask {
       createdAt: createdAt ?? DateTime.now(),
       doneAt: doneAt,
       order: json['order'] ?? 0,
+      contextText: json['contextText'] ?? '',
+      contextUpdatedAt: contextUpdatedAt,
     );
   }
 }
